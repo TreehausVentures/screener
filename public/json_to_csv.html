@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>JSON → CSV Converter</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 40px;
+    }
+    h1 {
+      margin-bottom: 20px;
+    }
+    label {
+      display: block;
+      margin-top: 10px;
+    }
+    input[type="file"] {
+      margin-top: 5px;
+    }
+    button {
+      margin-top: 20px;
+      padding: 10px 20px;
+      font-size: 1rem;
+    }
+    #status {
+      margin-top: 15px;
+      color: green;
+    }
+  </style>
+</head>
+<body>
+  <h1>JSON → CSV Converter</h1>
+
+  <label for="summaryFile">Upload <code>Kaufmann-summary.json</code>:</label>
+  <input type="file" id="summaryFile" accept=".json" />
+
+  <label for="reportsFile">Upload <code>Kauffman-reports.json</code>:</label>
+  <input type="file" id="reportsFile" accept=".json" />
+
+  <button id="convertBtn">Convert to CSV</button>
+
+  <div id="status"></div>
+
+  <script>
+    // The exact headers in the order requested
+    const FIELDNAMES = [
+      'ScreenerType',
+      'Assessment',
+      'Assessment Change',
+      'Severity',
+      'Severity Change',
+      'Notes-Changes',
+      'DocumentTitle',
+      'DocTitleReview',
+      'DocumentType',
+      'DocTypeReview',
+      'BorrowerItemType',
+      'Names',
+      'DateOrPeriod',
+      'AccountType',
+      'IssueType',
+      'IssueTypeReview',
+      'Description',
+      'Recommendation',
+      'Title'
+    ];
+
+    // Utility: escape a value for CSV (wrap in double-quotes and escape any internal quotes)
+    function csvEscape(val) {
+      if (val == null) return '';
+      const str = String(val);
+      return '"' + str.replace(/"/g, '""') + '"';
+    }
+
+    // When user clicks "Convert to CSV"
+    document.getElementById('convertBtn').addEventListener('click', () => {
+      const summaryInput = document.getElementById('summaryFile');
+      const reportsInput = document.getElementById('reportsFile');
+      const statusDiv = document.getElementById('status');
+      statusDiv.textContent = '';
+
+      if (!summaryInput.files.length || !reportsInput.files.length) {
+        alert('Please select both JSON files before converting.');
+        return;
+      }
+
+      const summaryFile = summaryInput.files[0];
+      const reportsFile = reportsInput.files[0];
+
+      // Read summary file first
+      const reader1 = new FileReader();
+      reader1.onload = () => {
+        let summaryData;
+        try {
+          summaryData = JSON.parse(reader1.result);
+        } catch (e) {
+          alert('Error parsing Kaufmann-summary.json: ' + e.message);
+          return;
+        }
+
+        // Then read reports file
+        const reader2 = new FileReader();
+        reader2.onload = () => {
+          let reportsData;
+          try {
+            reportsData = JSON.parse(reader2.result);
+          } catch (e) {
+            alert('Error parsing Kauffman-reports.json: ' + e.message);
+            return;
+          }
+
+          // Both JSONs are loaded and parsed—now process them
+          convertAndDownload(summaryData, reportsData);
+        };
+
+        reader2.readAsText(reportsFile);
+      };
+
+      reader1.readAsText(summaryFile);
+    });
+
+    function convertAndDownload(summaryJson, reportsJson) {
+      // Extract the summary text
+      const summaryReport = summaryJson.Report || {};
+      const topLevelSummary = (summaryReport.Summary || '').trim();
+
+      // Build array of row objects, each with all FIELDNAMES as keys
+      const rows = [];
+
+      // 1) Process "Reports" file → Reports → ExtractedDocuments → Issues
+      const reportsArray = (reportsJson.Reports || []);
+      reportsArray.forEach(report => {
+        const extractedDocs = report.ExtractedDocuments || [];
+        extractedDocs.forEach(doc => {
+          // Base values from each document
+          const base = {
+            'ScreenerType':      'Reports',
+            'Assessment':        doc.Assessment || '',
+            'Assessment Change': '',
+            'Severity':          '', // will fill per issue
+            'Severity Change':   '',
+            'Notes-Changes':     '',
+            'DocumentTitle':     doc.DocumentTitle || '',
+            'DocTitleReview':    '',
+            'DocumentType':      doc.DocumentType || '',
+            'DocTypeReview':     '',
+            'BorrowerItemType':  doc.BorrowerItemType || '',
+            'Names':             Array.isArray(doc.Names) ? doc.Names.join('; ') : '',
+            'DateOrPeriod':      doc.DateOrPeriod || '',
+            'AccountType':       (doc.ExtraInfo && doc.ExtraInfo.AccountType) || '',
+            'IssueType':         '', // will fill per issue
+            'IssueTypeReview':   '',
+            'Description':       '',
+            'Recommendation':    '',
+            'Title':             ''
+          };
+
+          const issues = doc.Issues || [];
+          issues.forEach(issue => {
+            const row = Object.assign({}, base);
+            row['Severity']       = issue.Severity || '';
+            row['IssueType']      = issue.IssueType || '';
+            row['Description']    = issue.Description || '';
+            row['Recommendation'] = issue.Recommendation || '';
+            // 'Title' stays blank for report-level issues
+            rows.push(row);
+          });
+        });
+      });
+
+      // 2) Process "Summary" file → Report → Issues
+      const summaryIssues = (summaryReport.Issues || []);
+      summaryIssues.forEach(issue => {
+        const row = {
+          'ScreenerType':      'Summary',
+          'Assessment':        summaryReport.Assessment || '',
+          'Assessment Change': '',
+          'Severity':          issue.Severity || '',
+          'Severity Change':   '',
+          'Notes-Changes':     '',
+          'DocumentTitle':     '',
+          'DocTitleReview':    '',
+          'DocumentType':      '',
+          'DocTypeReview':     '',
+          'BorrowerItemType':  '',
+          'Names':             '',
+          'DateOrPeriod':      '',
+          'AccountType':       '',
+          'IssueType':         issue.IssueType || '',
+          'IssueTypeReview':   '',
+          'Description':       issue.Description || '',
+          'Recommendation':    issue.Recommendation || '',
+          'Title':             issue.Title || ''
+        };
+        rows.push(row);
+      });
+
+      // 3) Build CSV text
+      let csvText = '';
+
+      // First line: unstructured summary row
+      csvText += 'Summary: ' + topLevelSummary + '\n\n';
+
+      // Second: header row
+      csvText += FIELDNAMES.map(csvEscape).join(',') + '\n';
+
+      // Then: each data row
+      rows.forEach(rowObj => {
+        const rowLine = FIELDNAMES.map(key => csvEscape(rowObj[key])).join(',');
+        csvText += rowLine + '\n';
+      });
+
+      // 4) Trigger download of the CSV
+      const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'combined.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+
+      // 5) Notify user
+      document.getElementById('status').textContent = 'Download started: combined.csv';
+    }
+  </script>
+</body>
+</html>
